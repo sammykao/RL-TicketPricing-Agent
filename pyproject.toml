@@ -1,0 +1,24 @@
+[project]
+name = "rl-ticket-pricing-agent"
+version = "0.1.0"
+description = "Dynamic ticket pricing RL agent and simulator."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "matplotlib>=3.8",
+    "scikit-learn>=1.4",
+    "torch>=2.2",
+    "tqdm>=4.66",
+    "seaborn>=0.13",
+    "gymnasium>=0.29",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "black>=24.3",
+]
+

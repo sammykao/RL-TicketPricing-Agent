@@ -61,18 +61,31 @@ project/
 └── EDA.ipynb
 
 
-## ⚙️ 3. Installation
-pip install -r requirements.txt
+## ⚙️ 3. Setup & Dependencies
 
-Required packages include:
-numpy
-pandas
-matplotlib
-scikit-learn
-torch
-tqdm
-seaborn
-gymnasium
+Project dependencies are tracked with **[uv](https://docs.astral.sh/uv/)** via `pyproject.toml`.  
+This keeps installs fast, reproducible, and isolated per project.
+
+1. **Install uv (one time)**
+   ```bash
+   pip install uv
+   ```
+   _Windows users can also grab the standalone installer from Astral if preferred._
+
+2. **Sync the project environment**
+   ```bash
+   cd RL-TicketPricing-Agent
+   uv sync
+   ```
+   This creates (or updates) a `.venv/` folder with all core dependencies:
+   `numpy`, `pandas`, `matplotlib`, `scikit-learn`, `torch`, `tqdm`, `seaborn`, `gymnasium`, etc.
+
+3. **Run any script through uv**
+   ```bash
+   uv run python learning_environment/data_generation/import_data.py
+   uv run python train/train_dqn.py
+   ```
+   `uv run` guarantees the script uses the synced environment without needing to manually activate the virtualenv.
 
 ---
 
@@ -104,7 +117,7 @@ Implemented in `env/ticket_env.py`.
 
 ### **State**
 
-[time_remaining, inventory_remaining, last_price, demand_rate]
+[time_remaining, last_price, demand_rate]
 
 ### **Actions**
 -Δp, 0, +Δp
@@ -117,7 +130,7 @@ q_t = α_t * exp(-β * price_t) + noise
 ### **Reward**
 revenue + sellout_bonus - price_jump_penalty
 
-Episode ends when inventory hits zero or time runs out.
+Episode ends when time runs out or all tickets are sold.
 
 ---
 
@@ -217,8 +230,8 @@ The RL agents are expected to:
 
 ---
 
-If you'd like, I can also generate:
+If you'd like, I can also:
 
-- `requirements.txt`  
-- a polished version with badges, logos, section icons  
-- a mermaid diagram of the full system architecture  
+- export a `requirements.txt` via `uv pip compile pyproject.toml -o requirements.txt`  
+- ship a polished version with badges, logos, section icons  
+- add a mermaid diagram of the full system architecture  
