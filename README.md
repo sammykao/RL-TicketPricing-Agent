@@ -96,6 +96,11 @@ This produces cleaned sequences in `data/processed/`, with:
 
 These sequences feed the RL environment.
 
+### Artificial dataset option
+We could also generate our own datasets in the event of SeatData.io getting too 
+expensive, where we could not only simulate the different events, but also the 
+environment where people buy tickets at different times.
+
 ---
 
 ## 🎮 5. Environment
