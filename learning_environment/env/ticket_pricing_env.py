@@ -29,9 +29,12 @@ def sample_event_context(random_state: np.random.Generator) -> Dict:
     Returns:
         Dict with 'is_weekend', 'is_playoff', 'day_of_week'
     """
-    is_weekend = random_state.random() < 0.3  # 30% probability
-    is_playoff = random_state.random() < 0.2  # 20% probability
+    # Sample day_of_week first, then derive is_weekend from it
+    # (matching data_extractor.py logic)
     day_of_week = random_state.choice(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+    is_weekend = day_of_week in ['Fri', 'Sat', 'Sun']
+    
+    is_playoff = random_state.random() < 0.2  # 20% probability
     
     return {
         'is_weekend': is_weekend,
