@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 import pickle
 import json
-from demand_fitter import DemandModel
+from demand_modeling.demand_fitter import DemandModel
 
 
 def save_model(
@@ -60,10 +60,19 @@ def load_model(filepath: Path) -> DemandModel:
     Returns:
         DemandModel instance
     """
+    import sys
     filepath = Path(filepath)
     
     if not filepath.exists():
         raise FileNotFoundError(f"Model file not found: {filepath}")
+    
+    # Fix for pickle compatibility: map old module name to new one
+    # This handles models saved with the old import path 'demand_fitter'
+    if 'demand_fitter' not in sys.modules:
+        # Import the actual module
+        from demand_modeling import demand_fitter
+        # Create alias so pickle can find it
+        sys.modules['demand_fitter'] = demand_fitter
     
     with open(filepath, 'rb') as f:
         model = pickle.load(f)

@@ -8,11 +8,11 @@ Usage:
 import argparse
 from pathlib import Path
 
-from data_extractor import extract_sales_data, get_data_summary
-from feature_engineer import build_features
-from demand_fitter import fit_demand_model, print_metrics
-from model_validator import cross_validate_demand_model, validate_model_quality
-from model_serializer import save_model
+from demand_modeling.data_extractor import extract_sales_data, get_data_summary
+from demand_modeling.feature_engineer import build_features
+from demand_modeling.demand_fitter import fit_demand_model, print_metrics
+from demand_modeling.model_validator import cross_validate_demand_model, validate_model_quality
+from demand_modeling.model_serializer import save_model
 
 
 def main():

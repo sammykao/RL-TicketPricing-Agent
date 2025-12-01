@@ -101,9 +101,9 @@ while not done:
     total_reward += reward
     
     print(f"Step: price=${info['current_price']:.2f}, "
-          f"p_sale={info['p_sale']:.3f}, reward=${reward:.2f}")
+          f"p_sale={info['p_sale']:.3f}, reward={reward:.2%}")
 
-print(f"Episode reward: ${total_reward:.2f}")
+print(f"Episode reward: {total_reward:.2%}")
 ```
 
 ### Custom Episode Parameters
@@ -151,15 +151,17 @@ Components:
 
 ```
 reward = {
-    current_price - initial_price  if ticket sold
-    0                              otherwise
+    (current_price - initial_price) / initial_price  if ticket sold (percentage change)
+    0                                                if no sale this step
+    -1.0                                             if time expires without sale (100% loss)
 }
 ```
 
 **Interpretation**:
-- Positive reward: Sold at price higher than initial (profit)
-- Negative reward: Sold at discount (loss, but ticket sold)
+- Positive reward: Sold at price higher than initial (e.g., +0.10 = 10% profit)
+- Negative reward: Sold at discount (e.g., -0.20 = 20% loss, but ticket sold)
 - Zero reward: No sale this step
+- -1.0 reward: Time expired without sale (100% loss - opportunity cost)
 
 ### Episode Termination
 
@@ -181,7 +183,7 @@ reward = {
    - Build feature vector from current state
    - Query demand model: `p_sale = model.predict_proba(features)[0, 1]`
    - Sample sale: `sold ~ Bernoulli(p_sale)`
-   - Compute reward: `price - initial_price` if sold, else `0`
+   - Compute reward: `(price - initial_price) / initial_price` (percentage) if sold, else `0`
    - Advance time: `time_remaining -= time_step`
    - Check termination
 
@@ -321,4 +323,5 @@ The environment is fast enough for RL training (1000+ episodes per minute).
 - Historical event context distribution
 - Custom reward functions
 - Render mode for visualization
+
 

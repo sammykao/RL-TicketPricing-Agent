@@ -236,3 +236,4 @@ All dependencies are in `pyproject.toml`:
 - Time horizon defaults to 30 days (720 hours)
 - Price bounds prevent extreme pricing (0.3x to 3.0x initial price)
 
+

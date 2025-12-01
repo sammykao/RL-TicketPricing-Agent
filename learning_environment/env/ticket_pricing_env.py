@@ -16,7 +16,7 @@ from gymnasium import spaces
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from demand_modeling.model_serializer import load_model
-from .feature_builder import build_features_from_state
+from env.feature_builder import build_features_from_state
 
 
 def sample_event_context(random_state: np.random.Generator) -> Dict:
@@ -74,7 +74,8 @@ class TicketPricingEnv(gym.Env):
     
     Episode: One ticket from some time_before_event until sale or event_time.
     Action: Percentage price change (discrete: -20%, -10%, -5%, 0%, +5%, +10%, +20%).
-    Reward: price - initial_price if sold, else 0.
+    Reward: (price - initial_price) / initial_price (percentage change) if sold,
+            0 if no sale this step, -1.0 (100% loss) if time expires without sale.
     """
     
     metadata = {"render_modes": [], "render_fps": 4}
@@ -87,6 +88,8 @@ class TicketPricingEnv(gym.Env):
         time_horizon: float = 720.0,
         time_step: float = 6.0,
         price_bounds: Tuple[float, float] = (0.3, 3.0),
+        demand_scale: float = 1.0,
+        max_probability: float = 0.95,
         random_seed: Optional[int] = None
     ):
         """
@@ -99,7 +102,17 @@ class TicketPricingEnv(gym.Env):
             time_horizon: Maximum hours before event (default 30 days = 720h)
             time_step: Hours per step (default 6h)
             price_bounds: (min_multiplier, max_multiplier) relative to initial_price
+            demand_scale: Multiplier for sale probability (default 1.0). 
+                         Values < 1.0 lower probabilities (harder), > 1.0 increase (easier)
+            max_probability: Maximum allowed sale probability (default 0.95).
+                            Prevents overconfident predictions - even if model predicts 100%,
+                            caps it to this value to account for uncertainty in real-world sales.
+                            NOTE: This caps the bin-level probability before converting to per-step.
             random_seed: Random seed for reproducibility
+            
+        Note: The demand model predicts P(sale in time_bin | features), not per-step probability.
+              The environment automatically converts bin-level probabilities to per-step probabilities
+              based on how many steps remain in the current time bin.
         """
         super().__init__()
         
@@ -115,6 +128,13 @@ class TicketPricingEnv(gym.Env):
         self.time_horizon = time_horizon
         self.time_step = time_step
         self.price_bounds = price_bounds
+        self.demand_scale = demand_scale
+        self.max_probability = max_probability
+        
+        if demand_scale < 0.0:
+            raise ValueError(f"demand_scale must be >= 0.0, got {demand_scale}")
+        if not (0.0 < max_probability <= 1.0):
+            raise ValueError(f"max_probability must be in (0.0, 1.0], got {max_probability}")
         
         # Initialize random state
         self.random_state = np.random.default_rng(random_seed)
@@ -161,8 +181,13 @@ class TicketPricingEnv(gym.Env):
         """
         Compute P(sale | current state) using demand model.
         
+        IMPORTANT: The demand model predicts P(sale in time_bin | features), not P(sale at this step).
+        We need to convert the bin-level probability to per-step probability based on:
+        1. Which time bin we're in
+        2. How many steps remain in that bin
+        
         Returns:
-            Probability of sale (0-1)
+            Per-step probability of sale (0-1)
         """
         # Build feature vector
         features = build_features_from_state(
@@ -177,9 +202,61 @@ class TicketPricingEnv(gym.Env):
         # Query demand model
         # Features must be 2D for predict_proba
         features_2d = features.reshape(1, -1)
-        p_sale = self.demand_model.predict_proba(features_2d)[0, 1]
+        p_sale_bin = self.demand_model.predict_proba(features_2d)[0, 1]
         
-        return float(p_sale)
+        # Apply demand scaling to lower/increase probabilities
+        p_sale_scaled = p_sale_bin * self.demand_scale
+        
+        # Cap maximum probability to account for real-world uncertainty
+        p_sale_capped = min(p_sale_scaled, self.max_probability)
+        
+        # Convert bin-level probability to per-step probability
+        # The model predicts P(sale in time_bin | state), but we need P(sale at this step | state)
+        # We need to know: which bin are we in, and how many steps in that bin?
+        
+        # Get current time bin
+        from env.feature_builder import compute_time_bin_log_scale
+        current_bin = compute_time_bin_log_scale(self.time_remaining, self.time_horizon)
+        
+        # Time bin boundaries (hours)
+        bin_boundaries = {
+            0: (0, 24),
+            1: (24, 72),
+            2: (72, 168),
+            3: (168, 336),
+            4: (336, 720),
+            5: (720, float('inf'))
+        }
+        
+        bin_start, bin_end = bin_boundaries[current_bin]
+        # Clamp to time_horizon
+        bin_end = min(bin_end, self.time_horizon)
+        bin_start = min(bin_start, self.time_horizon)
+        
+        # Hours remaining in this bin
+        hours_in_bin = min(self.time_remaining - bin_start, bin_end - bin_start)
+        hours_in_bin = max(hours_in_bin, self.time_step)  # At least one step
+        
+        # Steps remaining in this bin
+        steps_in_bin = max(1, int(np.ceil(hours_in_bin / self.time_step)))
+        
+        # Convert bin probability to per-step probability
+        # Model says: P(sale in this bin) = p_sale_capped
+        # We need: P(sale at this step) such that cumulative over bin ≈ p_sale_capped
+        # Formula: p_step = 1 - (1 - p_bin)^(1/n_steps_in_bin)
+        
+        if p_sale_capped >= 1.0:
+            # If bin probability is 100%, set per-step to 1.0 (guaranteed sale)
+            p_step = 1.0
+        elif p_sale_capped <= 0.0:
+            p_step = 0.0
+        else:
+            # Convert: p_bin = 1 - (1 - p_step)^n
+            # Solve for p_step: p_step = 1 - (1 - p_bin)^(1/n)
+            p_step = 1.0 - np.power(1.0 - p_sale_capped, 1.0 / steps_in_bin)
+        
+        # Ensure probability stays in valid range
+        return float(np.clip(p_step, 0.0, 1.0))
     
     def reset(
         self,
@@ -204,15 +281,23 @@ class TicketPricingEnv(gym.Env):
         
         # Sample episode parameters (or use provided options)
         if options is not None:
-            self.initial_price = options.get('initial_price', 
-                self.random_state.uniform(*self.initial_price_range))
             self.quality_score = options.get('quality_score',
                 self.random_state.uniform(*self.quality_range))
+            self.initial_price = options.get('initial_price', None)
+            if self.initial_price is None:
+                # Make price depend on quality: higher quality = higher price
+                # Map quality [0, 1] to price range [min, max]
+                price_min, price_max = self.initial_price_range
+                self.initial_price = price_min + self.quality_score * (price_max - price_min)
             self.event_context = options.get('event_context',
                 sample_event_context(self.random_state))
         else:
-            self.initial_price = self.random_state.uniform(*self.initial_price_range)
+            # Sample quality first
             self.quality_score = self.random_state.uniform(*self.quality_range)
+            # Make price depend on quality: higher quality = higher price
+            # Map quality [0, 1] to price range [min, max]
+            price_min, price_max = self.initial_price_range
+            self.initial_price = price_min + self.quality_score * (price_max - price_min)
             self.event_context = sample_event_context(self.random_state)
         
         # Reset episode state
@@ -234,7 +319,8 @@ class TicketPricingEnv(gym.Env):
         
         Returns:
             observation: Next observation
-            reward: Reward (price - initial_price if sold, else 0)
+            reward: Reward (price - initial_price if sold, 0 if no sale this step, 
+                           -initial_price if time expires without sale)
             terminated: Whether episode ended due to sale
             truncated: Whether episode ended due to time expiration
             info: Info dict with episode details
@@ -272,12 +358,16 @@ class TicketPricingEnv(gym.Env):
         # Sample sale outcome
         sold = self.random_state.random() < p_sale
         
-        # Compute reward
+        # Compute reward (percentage change in price, normalized)
         if sold:
-            reward = self.current_price - self.initial_price
+            # Reward = percentage change: (current_price - initial_price) / initial_price
+            # This normalizes across different price ranges (e.g., $100 vs $500 tickets)
+            price_change_pct = (self.current_price - self.initial_price) / self.initial_price
+            reward = price_change_pct
             self.sold = True
             terminated = True
         else:
+            # No sale this step - reward is 0 (we'll penalize at episode end if time expires)
             reward = 0.0
             terminated = False
         
@@ -290,6 +380,9 @@ class TicketPricingEnv(gym.Env):
         # Ensure time_remaining doesn't go negative
         if truncated:
             self.time_remaining = 0.0
+            # Penalty for not selling: -100% (lost the entire ticket value)
+            # Using percentage to normalize across price ranges
+            reward = -1.0
         
         # Info dict
         info = {

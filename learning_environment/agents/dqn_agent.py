@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Deque, Tuple, Dict, Any
 from collections import deque
+from pathlib import Path
 import random
 
 import numpy as np
@@ -10,6 +11,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from .base_agent import BaseAgent
+from env.ticket_pricing_env import TicketPricingEnv
 
 
 class QNetwork(nn.Module):
@@ -79,15 +81,16 @@ class DQNAgent(BaseAgent):
         self.replay_buffer: Deque[Tuple[np.ndarray, int, float, np.ndarray, bool]] = deque(
             maxlen=buffer_size
         )
+        
+        # Track training metrics
+        self.last_loss: float | None = None
 
     # ε schedule
-
     def epsilon(self) -> float:
         frac = min(1.0, self.total_steps / max(1, self.epsilon_decay_steps))
         return self.epsilon_start + frac * (self.epsilon_end - self.epsilon_start)
 
     # BaseAgent interface
-
     def select_action(self, obs: np.ndarray) -> int:
         eps = self.epsilon()
         if random.random() < eps:
@@ -137,9 +140,15 @@ class DQNAgent(BaseAgent):
 
         return obs, actions, rewards, next_obs, dones
 
-    def train_step(self) -> None:
+    def train_step(self) -> float | None:
+        """
+        Perform one training step.
+        
+        Returns:
+            Loss value if training occurred, None otherwise
+        """
         if len(self.replay_buffer) < self.batch_size:
-            return
+            return None
 
         obs, actions, rewards, next_obs, dones = self.sample_batch()
 
@@ -158,3 +167,87 @@ class DQNAgent(BaseAgent):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        
+        loss_value = loss.item()
+        self.last_loss = loss_value
+        return loss_value
+
+    def save(self, filepath: Path) -> None:
+        """
+        Save agent's Q-network weights and training state.
+        
+        Args:
+            filepath: Path to save checkpoint (should end in .pt or .pth)
+        """
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        checkpoint = {
+            'q_net_state_dict': self.q_net.state_dict(),
+            'target_net_state_dict': self.target_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'total_steps': self.total_steps,
+            'epsilon_start': self.epsilon_start,
+            'epsilon_end': self.epsilon_end,
+            'epsilon_decay_steps': self.epsilon_decay_steps,
+            'gamma': self.gamma,
+            'lr': self.optimizer.param_groups[0]['lr'],
+            'hidden_dim': self.q_net.net[0].out_features,  # Get from network
+            'batch_size': self.batch_size,
+            'buffer_size': self.buffer_size,
+            'min_buffer_size': self.min_buffer_size,
+            'target_update_freq': self.target_update_freq,
+        }
+        
+        torch.save(checkpoint, filepath)
+        print(f"Agent saved to {filepath}")
+
+    @classmethod
+    def load(cls, env: gym.Env, filepath: Path, device: str | None = None) -> 'DQNAgent':
+        """
+        Load agent from checkpoint.
+        
+        Args:
+            env: Environment instance
+            filepath: Path to checkpoint file
+            device: Device to load on (default: auto-detect)
+        
+        Returns:
+            Loaded DQNAgent instance
+        """
+        filepath = Path(filepath)
+        if not filepath.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {filepath}")
+        
+        checkpoint = torch.load(filepath, map_location=device)
+        
+        # Auto-detect device if not provided
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Create agent with saved hyperparameters
+        agent = cls(
+            env=env,
+            hidden_dim=checkpoint['hidden_dim'],
+            gamma=checkpoint['gamma'],
+            lr=checkpoint['lr'],
+            batch_size=checkpoint.get('batch_size', 64),
+            buffer_size=checkpoint.get('buffer_size', 50_000),
+            min_buffer_size=checkpoint.get('min_buffer_size', 1_000),
+            target_update_freq=checkpoint.get('target_update_freq', 1000),
+            epsilon_start=checkpoint['epsilon_start'],
+            epsilon_end=checkpoint['epsilon_end'],
+            epsilon_decay_steps=checkpoint['epsilon_decay_steps'],
+            device=device,
+        )
+        
+        # Load network weights
+        agent.q_net.load_state_dict(checkpoint['q_net_state_dict'])
+        agent.target_net.load_state_dict(checkpoint['target_net_state_dict'])
+        agent.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        agent.total_steps = checkpoint['total_steps']
+        
+        print(f"Agent loaded from {filepath}")
+        print(f"Resuming from step {agent.total_steps}")
+        
+        return agent

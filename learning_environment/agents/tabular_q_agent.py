@@ -78,7 +78,6 @@ class TabularQAgent(BaseAgent):
         return self.epsilon_start + frac * (self.epsilon_end - self.epsilon_start)
 
     # BaseAgent interface
-
     def select_action(self, obs: np.ndarray) -> int:
         state = self.discretize_obs(obs)
         eps = self.epsilon()

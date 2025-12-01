@@ -67,7 +67,14 @@ class BaseAgent(ABC):
         return total_reward, steps, last_info
 
     def train(self, n_episodes: int) -> List[float]:
-        """Simple training loop"""
+        """
+        Simple training loop.
+        
+        Note: Each episode automatically resets the environment via run_episode().
+        """
+        # Ensure environment is in a clean state before training
+        self.env.reset()
+        
         rewards: List[float] = []
         for _ in range(n_episodes):
             ep_reward, _, _ = self.run_episode(train=True, render=False)

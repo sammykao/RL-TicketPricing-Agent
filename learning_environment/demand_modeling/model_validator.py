@@ -5,7 +5,7 @@ Model validation and cross-validation utilities.
 from typing import Dict, List, Tuple
 import numpy as np
 from sklearn.model_selection import KFold
-from demand_fitter import fit_demand_model, DemandModel
+from demand_modeling.demand_fitter import fit_demand_model, DemandModel
 
 
 def cross_validate_demand_model(

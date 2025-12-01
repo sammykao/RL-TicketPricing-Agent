@@ -1,169 +1,253 @@
-"""
-Test script to validate the ticket pricing environment.
-
-Runs a small number of episodes and checks that:
-- Environment initializes correctly
-- Observations are in valid range
-- Episodes terminate correctly
-- Rewards are computed correctly
-"""
-
 import sys
 from pathlib import Path
 import numpy as np
+import matplotlib.pyplot as plt
+from collections import deque
 
-# Add parent directory to path
+# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ticket_pricing_env import TicketPricingEnv
+from agents.dqn_agent import DQNAgent
+from env.ticket_pricing_env import TicketPricingEnv
 
+# Get paths relative to learning_environment directory
+learning_env_dir = Path(__file__).parent.parent
+model_path = learning_env_dir / 'models' / 'demand_model_v1.pkl'
+checkpoint_path = learning_env_dir / 'checkpoints' / 'dqn_ticket_pricing.pt'
+plots_dir = learning_env_dir / 'plots'
+plots_dir.mkdir(exist_ok=True)
 
-def test_environment():
-    """Run basic tests on the environment."""
-    print("=" * 60)
-    print("TESTING TICKET PRICING ENVIRONMENT")
-    print("=" * 60)
+# Create environment 
+# demand_scale: Lower values = harder (lower sale probability)
+# Examples: 0.5 = 50% of original probability, 0.3 = 30% of original, etc.
+# max_probability: Caps maximum probability (default 0.95) to prevent overconfident predictions
+#                  Even if model predicts 100%, it's capped because:
+#                  - Empirical probabilities are aggregate, not individual guarantees
+#                  - Real-world sales have inherent uncertainty
+env = TicketPricingEnv(
+    demand_model_path=model_path,
+    initial_price_range=(100.0, 500.0),
+    quality_range=(0.0, 1.0),
+    time_horizon=720.0,
+    time_step=6.0,
+    price_bounds=(0.3, 3.0),
+    demand_scale=0.5,  # Set to 0.5 to make sales 50% less likely (adjust as needed)
+    max_probability=0.95,  # Cap at 95% to prevent overconfident predictions
+    random_seed=42
+)
+
+# Create or load agent
+if checkpoint_path.exists():
+    print("Loading existing checkpoint...")
+    agent = DQNAgent.load(env, checkpoint_path)
+else:
+    print("Creating new agent...")
+    agent = DQNAgent(
+        env=env,
+        hidden_dim=128,
+        gamma=0.99,
+        lr=1e-3,
+        batch_size=64,
+        buffer_size=50_000,
+        min_buffer_size=1_000,
+        target_update_freq=1000,
+        epsilon_start=1.0,
+        epsilon_end=0.05,
+        epsilon_decay_steps=50_000,
+    )
+
+# Training parameters
+n_episodes = 1000
+print_freq = 50  # Print metrics every N episodes
+plot_freq = 100  # Update plots every N episodes
+
+# Tracking metrics
+episode_rewards = []
+episode_lengths = []
+episode_losses = []
+epsilon_values = []
+steps_history = []
+
+# Rolling averages for smoothing
+reward_window = deque(maxlen=100)
+loss_window = deque(maxlen=1000)
+
+print("=" * 60)
+print("Starting DQN Training")
+print("=" * 60)
+print(f"Total episodes: {n_episodes}")
+print(f"Print frequency: every {print_freq} episodes")
+print(f"Device: {agent.device}")
+print(f"Initial epsilon: {agent.epsilon():.3f}")
+print("=" * 60)
+
+# Ensure environment is in a clean state
+env.reset()
+
+# Custom training loop with metrics tracking
+for episode in range(n_episodes):
+    obs, info = env.reset()
+    done = False
+    total_reward = 0.0
+    steps = 0
+    episode_losses_list = []
+    agent.last_loss = None  # Reset loss tracking for new episode
     
-    # Path to model
-    model_path = Path(__file__).parent.parent / 'models' / 'demand_model_v1.pkl'
-    
-    if not model_path.exists():
-        print(f"ERROR: Model file not found at {model_path}")
-        print("Please train the model first using demand_modeling/train_model.py")
-        return False
-    
-    # Create environment
-    print("\n[1/5] Creating environment...")
-    try:
-        env = TicketPricingEnv(
-            demand_model_path=model_path,
-            initial_price_range=(100.0, 500.0),
-            quality_range=(0.0, 1.0),
-            time_horizon=720.0,
-            time_step=6.0,
-            price_bounds=(0.3, 3.0),
-            random_seed=42
+    while not done:
+        action = agent.select_action(np.asarray(obs, dtype=float))
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        
+        # Observe and potentially train
+        agent.observe(
+            np.asarray(obs, dtype=float),
+            action,
+            float(reward),
+            np.asarray(next_obs, dtype=float),
+            bool(terminated),
+            bool(truncated),
+            info,
         )
-        print("  ✓ Environment created successfully")
-    except Exception as e:
-        print(f"  ✗ Failed to create environment: {e}")
-        return False
-    
-    # Test observation space
-    print("\n[2/5] Testing observation space...")
-    obs, info = env.reset()
-    print(f"  Observation shape: {obs.shape}")
-    print(f"  Observation range: [{obs.min():.3f}, {obs.max():.3f}]")
-    print(f"  Observation: {obs}")
-    
-    if not env.observation_space.contains(obs):
-        print(f"  ✗ Observation not in observation_space!")
-        return False
-    print("  ✓ Observation is valid")
-    
-    # Test action space
-    print("\n[3/5] Testing action space...")
-    print(f"  Action space: {env.action_space}")
-    print(f"  Action map: {env.action_map}")
-    
-    # Test multiple episodes
-    print("\n[4/5] Running 10 episodes...")
-    episode_stats = {
-        'total_episodes': 0,
-        'sold_episodes': 0,
-        'expired_episodes': 0,
-        'total_reward': 0.0,
-        'sold_rewards': [],
-        'episode_lengths': []
-    }
-    
-    for episode in range(10):
-        obs, info = env.reset()
-        episode_reward = 0.0
-        episode_length = 0
-        terminated = False
-        truncated = False
         
-        while not (terminated or truncated):
-            # Random action
-            action = env.action_space.sample()
-            obs, reward, terminated, truncated, info = env.step(action)
-            
-            episode_reward += reward
-            episode_length += 1
-            
-            # Safety check: prevent infinite loops
-            if episode_length > 200:
-                print(f"  Warning: Episode {episode} exceeded 200 steps, forcing termination")
-                break
+        # Track loss if training occurred
+        if agent.last_loss is not None:
+            episode_losses_list.append(agent.last_loss)
+            loss_window.append(agent.last_loss)
         
-        episode_stats['total_episodes'] += 1
-        episode_stats['total_reward'] += episode_reward
-        episode_stats['episode_lengths'].append(episode_length)
-        
-        if terminated:
-            episode_stats['sold_episodes'] += 1
-            episode_stats['sold_rewards'].append(episode_reward)
-            print(f"  Episode {episode + 1}: SOLD after {episode_length} steps, reward=${episode_reward:.2f}")
-        elif truncated:
-            episode_stats['expired_episodes'] += 1
-            print(f"  Episode {episode + 1}: EXPIRED after {episode_length} steps, reward=${episode_reward:.2f}")
+        total_reward += float(reward)
+        steps += 1
+        obs = next_obs
+        done = terminated or truncated
     
-    # Print statistics
-    print("\n[5/5] Episode Statistics:")
-    print(f"  Total episodes: {episode_stats['total_episodes']}")
-    print(f"  Sold: {episode_stats['sold_episodes']} ({episode_stats['sold_episodes']/episode_stats['total_episodes']*100:.1f}%)")
-    print(f"  Expired: {episode_stats['expired_episodes']} ({episode_stats['expired_episodes']/episode_stats['total_episodes']*100:.1f}%)")
-    print(f"  Average reward: ${episode_stats['total_reward']/episode_stats['total_episodes']:.2f}")
-    if episode_stats['sold_rewards']:
-        print(f"  Average reward (sold only): ${np.mean(episode_stats['sold_rewards']):.2f}")
-    print(f"  Average episode length: {np.mean(episode_stats['episode_lengths']):.1f} steps")
+    # Record episode metrics
+    episode_rewards.append(total_reward)
+    episode_lengths.append(steps)
+    reward_window.append(total_reward)
+    epsilon_values.append(agent.epsilon())
+    steps_history.append(agent.total_steps)
     
-    # Validate rewards
-    print("\n[6/5] Validating rewards...")
-    all_valid = True
-    
-    # Check that sold episodes have positive rewards (price > initial_price)
-    # or at least non-negative (could be discount)
-    for reward in episode_stats['sold_rewards']:
-        if reward < -1000:  # Allow some negative (discounts) but not extreme
-            print(f"  ✗ Invalid reward for sold episode: ${reward:.2f}")
-            all_valid = False
-    
-    if all_valid:
-        print("  ✓ All rewards are reasonable")
-    
-    # Test edge cases
-    print("\n[7/5] Testing edge cases...")
-    
-    # Test reset after termination
-    obs, info = env.reset()
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    
-    # Force termination by setting sold=True
-    env.sold = True
-    try:
-        env.step(0)
-        print("  ✗ Should have raised error for terminated episode")
-        all_valid = False
-    except ValueError:
-        print("  ✓ Correctly raises error for terminated episode")
-    
-    # Reset again
-    obs, info = env.reset()
-    print("  ✓ Reset works after termination")
-    
-    print("\n" + "=" * 60)
-    if all_valid:
-        print("ALL TESTS PASSED ✓")
-        return True
+    avg_loss = np.mean(episode_losses_list) if episode_losses_list else None
+    if avg_loss is not None:
+        episode_losses.append(avg_loss)
     else:
-        print("SOME TESTS FAILED ✗")
-        return False
+        episode_losses.append(None)
+    
+    # Print metrics periodically
+    if (episode + 1) % print_freq == 0 or episode == 0:
+        avg_reward = np.mean(list(reward_window)) if reward_window else 0.0
+        avg_loss_val = np.mean(list(loss_window)) if loss_window else None
+        current_epsilon = agent.epsilon()
+        
+        print(f"\nEpisode {episode + 1}/{n_episodes}")
+        print(f"  Reward: {total_reward:7.2%} | Avg (last 100): {avg_reward:7.2%}")
+        print(f"  Steps: {steps:4d} | Total steps: {agent.total_steps:6d}")
+        print(f"  Epsilon: {current_epsilon:.4f} | Buffer: {len(agent.replay_buffer):5d}/{agent.buffer_size}")
+        if avg_loss_val is not None:
+            print(f"  Avg Loss: {avg_loss_val:.6f}")
+        if info.get('sold'):
+            price_pct = ((info.get('current_price', 0) - info.get('initial_price', 0)) / info.get('initial_price', 1)) * 100
+            print(f"  ✓ Ticket sold at ${info.get('current_price', 0):.2f} ({price_pct:+.1f}% from initial ${info.get('initial_price', 0):.2f})")
+        else:
+            print(f"  ✗ Ticket not sold (time expired)")
 
+# Save checkpoint
+print("\n" + "=" * 60)
+print("Training Complete!")
+print("=" * 60)
+agent.save(checkpoint_path)
 
-if __name__ == '__main__':
-    success = test_environment()
-    sys.exit(0 if success else 1)
+# Create plots
+print("\nGenerating training plots...")
 
+fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+fig.suptitle('DQN Training Metrics', fontsize=16, fontweight='bold')
+
+# Plot 1: Episode Rewards
+ax1 = axes[0, 0]
+ax1.plot(episode_rewards, alpha=0.3, color='blue', label='Episode Reward')
+if len(reward_window) > 0:
+    # Plot rolling average
+    window_size = min(100, len(episode_rewards))
+    rolling_avg = [np.mean(episode_rewards[max(0, i-window_size+1):i+1]) 
+                   for i in range(len(episode_rewards))]
+    ax1.plot(rolling_avg, color='red', linewidth=2, label=f'Rolling Avg ({window_size})')
+ax1.set_xlabel('Episode')
+ax1.set_ylabel('Reward ($)')
+ax1.set_title('Episode Rewards')
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+
+# Plot 2: Epsilon Decay
+ax2 = axes[0, 1]
+ax2.plot(epsilon_values, color='green', linewidth=2)
+ax2.set_xlabel('Episode')
+ax2.set_ylabel('Epsilon')
+ax2.set_title('Epsilon Decay (Exploration Rate)')
+ax2.grid(True, alpha=0.3)
+
+# Plot 3: Training Loss
+ax3 = axes[1, 0]
+valid_losses = [(i, loss) for i, loss in enumerate(episode_losses) if loss is not None]
+if valid_losses:
+    loss_episodes, losses = zip(*valid_losses)
+    ax3.plot(loss_episodes, losses, alpha=0.5, color='orange', label='Episode Avg Loss')
+    if len(loss_window) > 0:
+        # Plot rolling average of losses
+        window_size = min(100, len(valid_losses))
+        loss_rolling = []
+        for i in range(len(valid_losses)):
+            window_losses = [l for _, l in valid_losses[max(0, i-window_size+1):i+1]]
+            if window_losses:
+                loss_rolling.append(np.mean(window_losses))
+        if loss_rolling:
+            ax3.plot([e for e, _ in valid_losses[:len(loss_rolling)]], 
+                    loss_rolling, color='red', linewidth=2, label=f'Rolling Avg ({window_size})')
+    ax3.set_xlabel('Episode')
+    ax3.set_ylabel('Loss')
+    ax3.set_title('Training Loss')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    ax3.set_yscale('log')
+else:
+    ax3.text(0.5, 0.5, 'No loss data yet\n(Waiting for buffer to fill)', 
+            ha='center', va='center', transform=ax3.transAxes)
+    ax3.set_title('Training Loss')
+
+# Plot 4: Episode Lengths
+ax4 = axes[1, 1]
+ax4.plot(episode_lengths, alpha=0.5, color='purple', label='Episode Length')
+window_size = min(100, len(episode_lengths))
+rolling_length = [np.mean(episode_lengths[max(0, i-window_size+1):i+1]) 
+                   for i in range(len(episode_lengths))]
+ax4.plot(rolling_length, color='red', linewidth=2, label=f'Rolling Avg ({window_size})')
+ax4.set_xlabel('Episode')
+ax4.set_ylabel('Steps')
+ax4.set_title('Episode Lengths')
+ax4.legend()
+ax4.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plot_path = plots_dir / 'dqn_training_metrics.png'
+plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+print(f"Plots saved to {plot_path}")
+plt.close()
+
+# Final evaluation
+print("\n" + "=" * 60)
+print("Running Final Evaluation...")
+print("=" * 60)
+eval_metrics = agent.evaluate(n_episodes=100)
+print(f"\nEvaluation Results (100 episodes):")
+print(f"  Mean Reward: {eval_metrics['mean_reward']:.2%}")
+print(f"  Std Reward:  {eval_metrics['std_reward']:.2%}")
+print(f"  Min Reward:  {eval_metrics['min_reward']:.2%}")
+print(f"  Max Reward:  {eval_metrics['max_reward']:.2%}")
+
+print("\n" + "=" * 60)
+print("Training Summary")
+print("=" * 60)
+print(f"Total episodes: {n_episodes}")
+print(f"Total steps: {agent.total_steps:,}")
+print(f"Final epsilon: {agent.epsilon():.4f}")
+print(f"Replay buffer size: {len(agent.replay_buffer):,}/{agent.buffer_size:,}")
+print(f"Final avg reward (last 100): {np.mean(list(reward_window)):.2%}")
+print("=" * 60)
