@@ -46,6 +46,7 @@ class DQNAgent(BaseAgent):
         target_update_freq: int = 1000,
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.05,
+        epsilon_decay = 0.995,
         epsilon_decay_steps: int = 50_000,
         device: str | None = None,
     ):
@@ -63,8 +64,10 @@ class DQNAgent(BaseAgent):
 
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
         self.epsilon_decay_steps = epsilon_decay_steps
         self.total_steps = 0
+        self.epsilon = self.epsilon_start
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -86,13 +89,27 @@ class DQNAgent(BaseAgent):
         self.last_loss: float | None = None
 
     # ε schedule
-    def epsilon(self) -> float:
-        frac = min(1.0, self.total_steps / max(1, self.epsilon_decay_steps))
-        return self.epsilon_start + frac * (self.epsilon_end - self.epsilon_start)
+    # def epsilon(self) -> float:
+    #     frac = min(1.0, self.total_steps / max(1, self.epsilon_decay_steps))
+    #     return self.epsilon_start + frac * (self.epsilon_end - self.epsilon_start)
+    
+    def update_epsilon(self):
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     # BaseAgent interface
+    # def select_action(self, obs: np.ndarray) -> int:
+    #     eps = self.epsilon()
+    #     if random.random() < eps:
+    #         return int(self.env.action_space.sample())
+
+    #     obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+    #     with torch.no_grad():
+    #         q_values = self.q_net(obs_tensor)
+    #     action = int(torch.argmax(q_values, dim=1).item())
+    #     return action
+    
     def select_action(self, obs: np.ndarray) -> int:
-        eps = self.epsilon()
+        eps = self.epsilon            # was: self.epsilon()
         if random.random() < eps:
             return int(self.env.action_space.sample())
 
@@ -201,6 +218,20 @@ class DQNAgent(BaseAgent):
         
         torch.save(checkpoint, filepath)
         print(f"Agent saved to {filepath}")
+
+    def select_greedy_action(self, obs: np.ndarray) -> int:
+        """Select the best action according to the current Q-network (no epsilon)."""
+        obs_tensor = torch.as_tensor(
+            obs, dtype=torch.float32, device=self.device
+        ).unsqueeze(0)
+
+        self.q_net.eval()
+        with torch.no_grad():
+            q_values = self.q_net(obs_tensor)
+            action = int(torch.argmax(q_values, dim=1).item())
+        self.q_net.train()  # keep training mode for normal updates
+
+        return action
 
     @classmethod
     def load(cls, env: gym.Env, filepath: Path, device: str | None = None) -> 'DQNAgent':

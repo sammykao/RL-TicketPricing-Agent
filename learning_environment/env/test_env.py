@@ -61,12 +61,46 @@ n_episodes = 1000
 print_freq = 50  # Print metrics every N episodes
 plot_freq = 100  # Update plots every N episodes
 
+eval_freq = 50          # evaluate every 50 training episodes
+eval_episodes = []
+eval_sell_through = []
+eval_avg_markup = []
+
 # Tracking metrics
 episode_rewards = []
 episode_lengths = []
 episode_losses = []
 epsilon_values = []
 steps_history = []
+
+def evaluate_agent(agent, env, n_eval_episodes=50):
+    sell_flags = []
+    markups = []
+
+    for _ in range(n_eval_episodes):
+        obs, info = env.reset()
+        done = False
+        last_info = info
+
+        while not done:
+            action = agent.select_greedy_action(np.asarray(obs, dtype=float))
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            last_info = info
+
+        sold = bool(last_info.get("sold", False))
+        sell_flags.append(int(sold))
+
+        if sold:
+            init_p = last_info["initial_price"]
+            final_p = last_info["current_price"]
+            markup = (final_p - init_p) / init_p
+            markups.append(markup)
+
+    sell_through = float(np.mean(sell_flags)) if sell_flags else 0.0
+    avg_markup = float(np.mean(markups)) if markups else 0.0
+
+    return sell_through, avg_markup
 
 # Rolling averages for smoothing
 reward_window = deque(maxlen=100)
@@ -78,7 +112,7 @@ print("=" * 60)
 print(f"Total episodes: {n_episodes}")
 print(f"Print frequency: every {print_freq} episodes")
 print(f"Device: {agent.device}")
-print(f"Initial epsilon: {agent.epsilon():.3f}")
+print(f"Initial epsilon: {agent.epsilon:.3f}")
 print("=" * 60)
 
 # Ensure environment is in a clean state
@@ -122,7 +156,7 @@ for episode in range(n_episodes):
     episode_rewards.append(total_reward)
     episode_lengths.append(steps)
     reward_window.append(total_reward)
-    epsilon_values.append(agent.epsilon())
+    epsilon_values.append(agent.epsilon)
     steps_history.append(agent.total_steps)
     
     avg_loss = np.mean(episode_losses_list) if episode_losses_list else None
@@ -130,12 +164,15 @@ for episode in range(n_episodes):
         episode_losses.append(avg_loss)
     else:
         episode_losses.append(None)
+
+    agent.update_epsilon()
+    
     
     # Print metrics periodically
     if (episode + 1) % print_freq == 0 or episode == 0:
         avg_reward = np.mean(list(reward_window)) if reward_window else 0.0
         avg_loss_val = np.mean(list(loss_window)) if loss_window else None
-        current_epsilon = agent.epsilon()
+        current_epsilon = agent.epsilon
         
         print(f"\nEpisode {episode + 1}/{n_episodes}")
         print(f"  Reward: {total_reward:7.2%} | Avg (last 100): {avg_reward:7.2%}")
@@ -148,6 +185,13 @@ for episode in range(n_episodes):
             print(f"  ✓ Ticket sold at ${info.get('current_price', 0):.2f} ({price_pct:+.1f}% from initial ${info.get('initial_price', 0):.2f})")
         else:
             print(f"  ✗ Ticket not sold (time expired)")
+
+    if (episode + 1) % eval_freq == 0:
+        st, mk = evaluate_agent(agent, env, n_eval_episodes=50)
+        eval_episodes.append(episode + 1)
+        eval_sell_through.append(st)
+        eval_avg_markup.append(mk)
+        print(f"  [Eval greedy] sell-through={st:6.2%} | avg markup={mk:6.2%}")
 
 # Save checkpoint
 print("\n" + "=" * 60)
@@ -247,7 +291,23 @@ print("Training Summary")
 print("=" * 60)
 print(f"Total episodes: {n_episodes}")
 print(f"Total steps: {agent.total_steps:,}")
-print(f"Final epsilon: {agent.epsilon():.4f}")
+print(f"Final epsilon: {agent.epsilon:.4f}")
 print(f"Replay buffer size: {len(agent.replay_buffer):,}/{agent.buffer_size:,}")
 print(f"Final avg reward (last 100): {np.mean(list(reward_window)):.2%}")
 print("=" * 60)
+
+fig2, ax = plt.subplots(figsize=(8, 5))
+if eval_episodes:
+    ax.plot(eval_episodes, eval_sell_through, label="Sell-through", linewidth=2)
+    ax.plot(eval_episodes, eval_avg_markup, label="Avg markup (sold only)", linewidth=2)
+ax.set_xlabel("Training Episode")
+ax.set_ylabel("Metric")
+ax.set_title("Greedy Policy Performance Over Training")
+ax.legend()
+ax.grid(True, alpha=0.3)
+
+perf_plot_path = plots_dir / 'dqn_eval_performance.png'
+plt.savefig(perf_plot_path, dpi=150, bbox_inches='tight')
+print(f"Performance plot saved to {perf_plot_path}")
+plt.close()
+
