@@ -56,7 +56,7 @@ else:
         epsilon_decay_rate=0.9992,
     )
 # Training parameters
-n_episodes = 2000
+n_episodes = 10000
 print_freq = 50  # Print metrics every N episodes
 plot_freq = 100  # Update plots every N episodes
 
