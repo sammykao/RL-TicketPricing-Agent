@@ -33,7 +33,7 @@ env = TicketPricingEnv(
     price_bounds=(0.3, 3.0),
     demand_scale=0.5,   # moderate difficulty
     max_probability=0.95,
-    random_seed=42,
+    random_seed=1,
 )
 
 # Create or load the agent
@@ -56,7 +56,7 @@ else:
         epsilon_decay_rate=0.9992,
     )
 # Training parameters
-n_episodes = 10000
+n_episodes = 2000
 print_freq = 50  # Print metrics every N episodes
 plot_freq = 100  # Update plots every N episodes
 
@@ -309,4 +309,80 @@ perf_plot_path = plots_dir / 'dqn_eval_performance.png'
 plt.savefig(perf_plot_path, dpi=150, bbox_inches='tight')
 print(f"Performance plot saved to {perf_plot_path}")
 plt.close()
+
+
+# ================================================
+# Standalone plot: Episode Reward over Training
+# ================================================
+fig_reward, ax = plt.subplots(figsize=(8, 4))
+
+episodes = np.arange(len(episode_rewards))
+
+# Raw episode rewards (light)
+ax.plot(episodes, episode_rewards, alpha=0.25, linewidth=1.0, label="Episode reward")
+
+# Rolling average (100 episodes, or smaller if run is short)
+window = min(100, len(episode_rewards))
+if window > 1:
+    rolling_rewards = [
+        np.mean(episode_rewards[max(0, i - window + 1): i + 1])
+        for i in range(len(episode_rewards))
+    ]
+    ax.plot(episodes, rolling_rewards, linewidth=2.0, label=f"Rolling avg ({window})")
+
+perf_plot_path = plots_dir / "episode_reward_curve.png"
+ax.set_xlabel("Episode")
+ax.set_ylabel("Total reward")
+ax.set_title("DQN Training – Episode Reward over Time")
+ax.grid(True, linestyle="--", alpha=0.4)
+ax.legend(loc="best")
+
+fig_reward.tight_layout()
+fig_reward.savefig(perf_plot_path, dpi=200)
+
+# ================================================
+# Standalone plot: Epsilon Decay vs Episode
+# ================================================
+fig_eps, ax = plt.subplots(figsize=(8, 4))
+
+episodes = np.arange(len(epsilon_values))
+
+ax.plot(episodes, epsilon_values, color="green", linewidth=2)
+
+ax.set_xlabel("Episode")
+ax.set_ylabel("Epsilon (exploration probability)")
+ax.set_title("DQN Training – Epsilon Decay Over Time")
+ax.grid(True, linestyle="--", alpha=0.4)
+
+fig_eps.tight_layout()
+fig_eps.savefig(plots_dir / "epsilon_decay_curve.png", dpi=200)
+
+
+# ================================================
+# Standalone plot: Training Loss Curve
+# ================================================
+fig_loss, ax = plt.subplots(figsize=(8, 4))
+
+# Use episode_losses (some entries may be None)
+valid_losses = [l for l in episode_losses if l is not None]
+steps = np.arange(len(valid_losses))
+
+ax.plot(steps, valid_losses, alpha=0.2, label="Loss (raw)")
+
+window = min(200, len(valid_losses))
+if window > 1:
+    rolling_loss = [
+        np.mean(valid_losses[max(0, i - window + 1): i + 1])
+        for i in range(len(valid_losses))
+    ]
+    ax.plot(steps, rolling_loss, linewidth=2, color="red", label=f"Rolling avg ({window})")
+
+ax.set_xlabel("Training Episode")
+ax.set_ylabel("Loss (SmoothL1)")
+ax.set_title("DQN Training – Loss Curve")
+ax.grid(True, linestyle="--", alpha=0.4)
+ax.legend()
+
+fig_loss.tight_layout()
+fig_loss.savefig(plots_dir / "training_loss_curve.png", dpi=200)
 
