@@ -65,17 +65,19 @@ def test_tabular():
 
 def test_dqn():
     env = LineWorldEnv()
-    agent = DQNAgent(env,
-                     hidden_dim=64,
-                     gamma=0.99,
-                     lr=1e-3,
-                     batch_size=64,
-                     buffer_size=10000,
-                     min_buffer_size=500,
-                     target_update_freq=500,
-                     epsilon_start=1.0,
-                     epsilon_end=0.05,
-                     epsilon_decay_steps=10000)
+    agent = DQNAgent(
+        env=env,
+        hidden_dim=128,
+        gamma=0.99,
+        lr=1e-3,
+        batch_size=64,
+        buffer_size=10_000,
+        min_buffer_size=500,
+        target_update_freq=500,
+        epsilon_start=1.0,
+        epsilon_end=0.05,
+        epsilon_decay_rate=0.99,  # faster decay is fine for tiny toy env
+    )
 
     print("Training DQNAgent on LineWorld...")
     agent.train(n_episodes=500)

@@ -17,10 +17,12 @@ from env.ticket_pricing_env import TicketPricingEnv
 class QNetwork(nn.Module):
     """Simple MLP for the DQN: obs -> Q-values for each action."""
 
-    def __init__(self, obs_dim: int, n_actions: int, hidden_dim: int = 64):
+    def __init__(self, obs_dim: int, n_actions: int, hidden_dim: int = 256):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -37,17 +39,16 @@ class DQNAgent(BaseAgent):
     def __init__(
         self,
         env: gym.Env,
-        hidden_dim: int = 64,
+        hidden_dim: int = 256,
         gamma: float = 0.99,
-        lr: float = 1e-3,
-        batch_size: int = 64,
-        buffer_size: int = 50_000,
-        min_buffer_size: int = 1_000,
-        target_update_freq: int = 1000,
+        lr: float = 5e-4,
+        batch_size: int = 128,
+        buffer_size: int = 100_000,
+        min_buffer_size: int = 5_000,
+        target_update_freq: int = 500,
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.05,
-        epsilon_decay = 0.995,
-        epsilon_decay_steps: int = 50_000,
+        epsilon_decay_rate = 0.9992,
         device: str | None = None,
     ):
         super().__init__(env)
@@ -62,27 +63,27 @@ class DQNAgent(BaseAgent):
         self.min_buffer_size = min_buffer_size
         self.target_update_freq = target_update_freq
 
+        # ε-greedy params
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay
-        self.epsilon_decay_steps = epsilon_decay_steps
+        self.epsilon_decay_rate = epsilon_decay_rate
+        self.epsilon = epsilon_start
         self.total_steps = 0
-        self.epsilon = self.epsilon_start
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Networks
         self.q_net = QNetwork(obs_dim, n_actions, hidden_dim).to(self.device)
         self.target_net = QNetwork(obs_dim, n_actions, hidden_dim).to(self.device)
-        self.target_net.load_state_dict(self.q_net.state_dict())
+        self.update_target_network()
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.SmoothL1Loss() 
 
         # Replay buffer: (obs, action, reward, next_obs, done)
         self.replay_buffer: Deque[Tuple[np.ndarray, int, float, np.ndarray, bool]] = deque(
-            maxlen=buffer_size
+            maxlen=self.buffer_size
         )
         
         # Track training metrics
@@ -94,7 +95,12 @@ class DQNAgent(BaseAgent):
     #     return self.epsilon_start + frac * (self.epsilon_end - self.epsilon_start)
     
     def update_epsilon(self):
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay_rate)
+
+
+    def update_target_network(self) -> None:
+        """Hard update of the target network."""
+        self.target_net.load_state_dict(self.q_net.state_dict())
 
     # BaseAgent interface
     # def select_action(self, obs: np.ndarray) -> int:
@@ -108,9 +114,8 @@ class DQNAgent(BaseAgent):
     #     action = int(torch.argmax(q_values, dim=1).item())
     #     return action
     
-    def select_action(self, obs: np.ndarray) -> int:
-        eps = self.epsilon            # was: self.epsilon()
-        if random.random() < eps:
+    def select_action(self, obs: np.ndarray) -> int:       
+        if random.random() < self.epsilon:
             return int(self.env.action_space.sample())
 
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
@@ -135,13 +140,11 @@ class DQNAgent(BaseAgent):
         self.replay_buffer.append((obs.copy(), int(action), float(reward), next_obs.copy(), done))
         self.total_steps += 1
 
-        # Train only if we have enough data
-        if len(self.replay_buffer) >= self.min_buffer_size:
-            self.train_step()
+        self.train_step()
 
         # Update target network periodically
         if self.total_steps % self.target_update_freq == 0:
-            self.target_net.load_state_dict(self.q_net.state_dict())
+            self.update_target_network()
 
     # training step
 
@@ -164,7 +167,7 @@ class DQNAgent(BaseAgent):
         Returns:
             Loss value if training occurred, None otherwise
         """
-        if len(self.replay_buffer) < self.batch_size:
+        if len(self.replay_buffer) < self.min_buffer_size:
             return None
 
         obs, actions, rewards, next_obs, dones = self.sample_batch()
@@ -183,6 +186,7 @@ class DQNAgent(BaseAgent):
 
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         
         loss_value = loss.item()
@@ -206,10 +210,11 @@ class DQNAgent(BaseAgent):
             'total_steps': self.total_steps,
             'epsilon_start': self.epsilon_start,
             'epsilon_end': self.epsilon_end,
-            'epsilon_decay_steps': self.epsilon_decay_steps,
+            'epsilon_decay_rate': self.epsilon_decay_rate,
+            'epsilon': self.epsilon,
             'gamma': self.gamma,
             'lr': self.optimizer.param_groups[0]['lr'],
-            'hidden_dim': self.q_net.net[0].out_features,  # Get from network
+            'hidden_dim': self.q_net.net[0].out_features,
             'batch_size': self.batch_size,
             'buffer_size': self.buffer_size,
             'min_buffer_size': self.min_buffer_size,
@@ -262,16 +267,19 @@ class DQNAgent(BaseAgent):
             hidden_dim=checkpoint['hidden_dim'],
             gamma=checkpoint['gamma'],
             lr=checkpoint['lr'],
-            batch_size=checkpoint.get('batch_size', 64),
-            buffer_size=checkpoint.get('buffer_size', 50_000),
-            min_buffer_size=checkpoint.get('min_buffer_size', 1_000),
+            batch_size=checkpoint.get('batch_size', 128),
+            buffer_size=checkpoint.get('buffer_size', 100_000),
+            min_buffer_size=checkpoint.get('min_buffer_size', 5_000),
             target_update_freq=checkpoint.get('target_update_freq', 1000),
             epsilon_start=checkpoint['epsilon_start'],
             epsilon_end=checkpoint['epsilon_end'],
-            epsilon_decay_steps=checkpoint['epsilon_decay_steps'],
+            epsilon_decay_rate=checkpoint.get('epsilon_decay_rate', 0.9992),
             device=device,
         )
         
+        agent.total_steps = checkpoint['total_steps']
+        agent.epsilon = checkpoint.get('epsilon', agent.epsilon_start)
+
         # Load network weights
         agent.q_net.load_state_dict(checkpoint['q_net_state_dict'])
         agent.target_net.load_state_dict(checkpoint['target_net_state_dict'])

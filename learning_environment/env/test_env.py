@@ -31,12 +31,12 @@ env = TicketPricingEnv(
     time_horizon=720.0,
     time_step=6.0,
     price_bounds=(0.3, 3.0),
-    demand_scale=0.5,  # Set to 0.5 to make sales 50% less likely (adjust as needed)
-    max_probability=0.95,  # Cap at 95% to prevent overconfident predictions
-    random_seed=42
+    demand_scale=0.5,   # moderate difficulty
+    max_probability=0.95,
+    random_seed=42,
 )
 
-# Create or load agent
+# Create or load the agent
 if checkpoint_path.exists():
     print("Loading existing checkpoint...")
     agent = DQNAgent.load(env, checkpoint_path)
@@ -44,24 +44,23 @@ else:
     print("Creating new agent...")
     agent = DQNAgent(
         env=env,
-        hidden_dim=128,
+        hidden_dim=256,
         gamma=0.99,
-        lr=1e-3,
-        batch_size=64,
-        buffer_size=50_000,
-        min_buffer_size=1_000,
-        target_update_freq=1000,
+        lr=5e-4,
+        batch_size=128,
+        buffer_size=100_000,
+        min_buffer_size=5_000,
+        target_update_freq=500,
         epsilon_start=1.0,
         epsilon_end=0.05,
-        epsilon_decay_steps=50_000,
+        epsilon_decay_rate=0.9992,
     )
-
 # Training parameters
-n_episodes = 1000
+n_episodes = 2000
 print_freq = 50  # Print metrics every N episodes
 plot_freq = 100  # Update plots every N episodes
 
-eval_freq = 50          # evaluate every 50 training episodes
+eval_freq = 100          # evaluate every 50 training episodes
 eval_episodes = []
 eval_sell_through = []
 eval_avg_markup = []
